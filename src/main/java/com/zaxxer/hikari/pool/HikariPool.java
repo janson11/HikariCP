@@ -172,15 +172,25 @@ public final class HikariPool extends PoolBase implements HikariPoolMXBean, IBag
          do {
             PoolEntry poolEntry = connectionBag.borrow(timeout, MILLISECONDS);
             if (poolEntry == null) {
+               // suspendResumeLock.acquire()走到poolEntry == null时已经超时了
                break; // We timed out... break and throw exception
             }
 
+            // 拿到一个poolEntry后先判断是否已经被标记为待清理
+            // 或已经超过了设置的最大存活时间（应用配置的最大存活时间不应超过DBA在DB端配置的最大连接存活时间），
+            // 若是直接关闭继续调用borrow，否则才会返回该连接，
             final long now = currentTime();
             if (poolEntry.isMarkedEvicted() || (elapsedMillis(poolEntry.lastAccessed, now) > ALIVE_BYPASS_WINDOW_MS && !isConnectionAlive(poolEntry.connection))) {
                closeConnection(poolEntry, poolEntry.isMarkedEvicted() ? EVICTED_CONNECTION_MESSAGE : DEAD_CONNECTION_MESSAGE);
                timeout = hardTimeout - elapsedMillis(startTime);
             }
             else {
+               // 该段代码的意义就是此指标的记录处。 Vesta模版中该指标单位配为了毫秒，此指标和排队线程数结合，
+               // 可以初步提出 增大连接数 或 优化慢查询／慢事务 的优化方案等
+               // 当 排队线程数多 而 获取连接的耗时较短 时，可以考虑增大连接数
+               //当 排队线程数少 而 获取连接的耗时较长 时，此种场景不常见，举例来说，可能是某个接口QPS较低，连接数配的小于这个QPS，而这个连接中有较慢的查询或事务，这个需要具体问题具体分析
+               //当 排队线程数多 且 获取连接的耗时较长时，这种场景比较危险，有可能是某个时间点DB压力大或者网络抖动造成的，
+               // 排除这些场景，若长时间出现这种情况则可认为 连接配置不合理／程序是没有达到上线标准 ，如果可以从业务逻辑上优化慢查询／慢事务是最好的，否则可以尝试 增大连接数 或 应用扩容
                metricsTracker.recordBorrowStats(poolEntry, startTime);
                return poolEntry.createProxyConnection(leakTaskFactory.schedule(poolEntry), now);
             }
