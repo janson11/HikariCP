@@ -146,9 +146,10 @@ abstract class PoolBase
       try {
          try {
             setNetworkTimeout(connection, validationTimeout);
-
+            // validationTimeout的默认值是5000毫秒，所以默认情况下validationSeconds的值应该在1-5毫秒之间，
             final int validationSeconds = (int) Math.max(1000L, validationTimeout) / 1000;
 
+            // 如果使用JDBC4，则使用isValid()方法进行验证
             if (isUseJdbc4Validation) {
                return connection.isValid(validationSeconds);
             }
@@ -157,7 +158,7 @@ abstract class PoolBase
                if (isNetworkTimeoutSupported != TRUE) {
                   setQueryTimeout(statement, validationSeconds);
                }
-
+               // 执行一个测试的SQL语句，如果执行成功，则说明连接是有效的
                statement.execute(config.getConnectionTestQuery());
             }
          }
@@ -481,6 +482,7 @@ abstract class PoolBase
 
    /**
     * Set the query timeout, if it is supported by the driver.
+    * 设置查询超时，如果驱动支持。
     *
     * @param statement a statement to set the query timeout on
     * @param timeoutSec the number of seconds before timeout
@@ -539,6 +541,7 @@ abstract class PoolBase
    /**
     * Set the network timeout, if <code>isUseNetworkTimeout</code> is <code>true</code> and the
     * driver supports it.
+    * 设置网络超时，如果isUseNetworkTimeout为true且驱动支持，返回网络超时的预先存在值。
     *
     * @param connection the connection to set the network timeout on
     * @param timeoutMs the number of milliseconds before timeout

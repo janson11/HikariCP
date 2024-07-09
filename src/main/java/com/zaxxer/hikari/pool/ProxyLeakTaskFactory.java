@@ -20,6 +20,7 @@ import java.util.concurrent.ScheduledExecutorService;
 
 /**
  * A factory for {@link ProxyLeakTask} Runnables that are scheduled in the future to report leaks.
+ * 一个用于将来调用报告更多任务的{@link ProxyLeakTask} Runnable的工厂。
  *
  * @author Brett Wooldridge
  * @author Andreas Brenk
@@ -35,6 +36,11 @@ class ProxyLeakTaskFactory
       this.leakDetectionThreshold = leakDetectionThreshold;
    }
 
+   /**
+    * 如果leakDetectionThreshold=0，即禁用连接泄露检测，schedule返回的是ProxyLeakTask.NO_LEAK，否则则新建一个ProxyLeakTask，在leakDetectionThreshold时间后触发
+    * @param poolEntry
+    * @return
+    */
    ProxyLeakTask schedule(final PoolEntry poolEntry)
    {
       return (leakDetectionThreshold == 0) ? ProxyLeakTask.NO_LEAK : scheduleNewTask(poolEntry);

@@ -69,6 +69,14 @@ import com.zaxxer.hikari.util.ConcurrentBag.IConcurrentBagEntry;
  * 类型参数：
  * <T> – 要存储在袋子中的模板化类型
  *
+ * ConcurrentBag内部同时使用了ThreadLocal和CopyOnWriteArrayList来存储元素，其中CopyOnWriteArrayList是线程共享的。
+ * ConcurrentBag采用了queue-stealing的机制获取元素：首先尝试从ThreadLocal中获取属于当前线程的元素来避免锁竞争，如果没有可用元素则扫描公共集合、再次从共享的CopyOnWriteArrayList中获取。
+ * （ThreadLocal列表中没有被使用的items在借用线程没有属于自己的时候，是可以被“窃取”的） ThreadLocal和CopyOnWriteArrayList在ConcurrentBag中都是成员变量，线程间不共享，避免了伪共享(false sharing)的发生。
+ * 其使用专门的AbstractQueuedLongSynchronizer来管理跨线程信号，这是一个"lock-less“的实现。 这里要特别注意的是，ConcurrentBag中通过borrow方法进行数据资源借用，通过requite方法进行资源回收，
+ * 注意其中borrow方法只提供对象引用，不移除对象。所以从bag中“借用”的items实际上并没有从任何集合中删除，因此即使引用废弃了，垃圾收集也不会发生。
+ * 因此使用时通过borrow取出的对象必须通过requite方法进行放回，否则会导致内存泄露，只有"remove"方法才能完全从bag中删除一个对象。
+ *
+ *
  * @author Brett Wooldridge
  *
  * @param <T> the templated type to store in the bag
@@ -123,6 +131,11 @@ public class ConcurrentBag<T extends IConcurrentBagEntry> implements AutoCloseab
       this.listener = listener;
       this.weakThreadLocals = useWeakThreadLocals();
 
+      // 公平模式总结下来就是：队尾匹配队头出队，先进先出，体现公平原则。
+      // 这里的公平模式是指：当有线程等待时，新添加的资源优先匹配等待线程，先进先出。
+      // SynchronousQueue是一个无存储空间的阻塞队列(是实现newFixedThreadPool的核心)，非常适合做交换工作，生产者的线程和消费者的线程同步以传递某些信息、事件或者任务。
+      // 因为是无存储空间的，所以与其他阻塞队列实现不同的是，这个阻塞peek方法直接返回null，无任何其他操作，其他的方法与阻塞队列的其他方法一致。
+      // 这个队列的特点是，必须先调用take或者poll方法，才能使用off，add方法
       this.handoffQueue = new SynchronousQueue<>(true);
       this.waiters = new AtomicInteger();
       this.sharedList = new CopyOnWriteArrayList<>();
@@ -240,7 +253,7 @@ public class ConcurrentBag<T extends IConcurrentBagEntry> implements AutoCloseab
          throw new IllegalStateException("ConcurrentBag has been closed, ignoring add()");
       }
 
-      //  //新添加的资源优先放入CopyOnWriteArrayList中，避免资源竞争
+      //  新添加的资源优先放入CopyOnWriteArrayList中，避免资源竞争
       sharedList.add(bagEntry);
 
       // spin until a thread takes it or none are waiting
@@ -355,6 +368,7 @@ public class ConcurrentBag<T extends IConcurrentBagEntry> implements AutoCloseab
    /**
     * Get the number of threads pending (waiting) for an item from the
     * bag to become available.
+    * 获取等待袋子中可用项的线程数。
     *
     * @return the number of threads waiting for items from the bag
     */

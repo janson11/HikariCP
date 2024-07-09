@@ -32,6 +32,7 @@ import java.util.function.UnaryOperator;
 
 /**
  * Fast list without range checking.
+ * 简而言之就是 自定义数组类型（FastList）代替ArrayList：避免每次get()调用都要进行range check，避免调用remove()时的从头到尾的扫描
  *
  * @author Brett Wooldridge
  */
@@ -228,7 +229,7 @@ public final class FastList<T> implements List<T>, RandomAccess, Serializable
                return elementData[index++];
             }
 
-            throw new NoSuchElementException("No more elements in FastList"); 
+            throw new NoSuchElementException("No more elements in FastList");
          }
       };
    }

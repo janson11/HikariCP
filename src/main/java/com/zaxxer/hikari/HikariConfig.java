@@ -45,29 +45,76 @@ import static com.zaxxer.hikari.util.UtilityElf.safeIsAssignableFrom;
 import static java.util.concurrent.TimeUnit.MINUTES;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
+/**
+ * 小结一下就是，minIdle来指定空闲连接的最小数量，maxPoolSize指定连接池连接最大值，默认初始化的时候，是初始化minIdle大小的连接，如果minIdle与maxPoolSize值相等那就是初始化时把连接池填满。
+ * idleTimeout用来指定空闲连接的时长，maxLifetime用来指定所有连接的时长。com.zaxxer.hikari.housekeeping.periodMs用来指定连接池空闲连接处理及连接池数补充的HouseKeeper任务的调度时间间隔。
+ * 所有的连接在maxLifetime之后都得重连一次，保证连接池的活性。
+ */
+
 @SuppressWarnings({"SameParameterValue", "unused"})
 public class HikariConfig implements HikariConfigMXBean
 {
    private static final Logger LOGGER = LoggerFactory.getLogger(HikariConfig.class);
 
    private static final char[] ID_CHARACTERS = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ".toCharArray();
+   /**
+    * 连接超时时间，单位：毫秒，默认值30s
+    * 首先解释一下connectionTimeout的意思，这并不是获取连接的超时时间，而是从连接池返回连接的超时时间。
+    * SQL执行的超时时间，JDBC 可以直接使用 Statement.setQueryTimeout，
+    * Spring 可以使用 @Transactional(timeout=10)。
+    *
+    * connectionTimeout This property controls the maximum number of milliseconds that a client (that's you)
+    * will wait for a connection from the pool. If this time is exceeded without a connection becoming available,
+    * a SQLException will be thrown. Lowest acceptable connection timeout is 250 ms. Default: 30000 (30 seconds)
+    */
    private static final long CONNECTION_TIMEOUT = SECONDS.toMillis(30);
+   /**
+    * 验证超时时间，单位：毫秒，默认值5s
+    */
    private static final long VALIDATION_TIMEOUT = SECONDS.toMillis(5);
+   /**
+    * 空闲超时时间，单位：毫秒，默认值10分钟
+    */
    private static final long IDLE_TIMEOUT = MINUTES.toMillis(10);
+   /**
+    * 最大生命周期，单位：毫秒，默认值30分钟
+    */
    private static final long MAX_LIFETIME = MINUTES.toMillis(30);
+   /**
+    * 默认连接池大小，默认值10
+    */
    private static final int DEFAULT_POOL_SIZE = 10;
 
    private static boolean unitTest = false;
 
    // Properties changeable at runtime through the HikariConfigMXBean
-   //
+   // 属性可通过HikariConfigMXBean动态修改的属性
    private volatile String catalog;
    private volatile long connectionTimeout;
    private volatile long validationTimeout;
+   /**
+    * 属性控制连接在连接池中允许空闲的最长时间。此设置仅在 minimumIdle 定义为小于 maximumPoolSize 时适用。
+    * 当连接池达到 minimumIdle 连接数时，空闲连接不会被移除。一个连接是否被视为空闲并移除有一定的变化范围，最大变化为 +30 秒，平均变化为 +15 秒。
+    * 一个连接在此超时之前永远不会被视为空闲并移除。值为 0 表示空闲连接永远不会从连接池中移除。允许的最小值为 10000 毫秒（10 秒）。默认值：600000 毫秒（10 分钟）
+    * 只有当minimumIdle小于maximumPoolSize时，这个参数才生效，当空闲连接数超过minimumIdle，而且空闲时间超过idleTimeout，则会被移除。
+    */
    private volatile long idleTimeout;
    private volatile long leakDetectionThreshold;
    private volatile long maxLifetime;
+   /**
+    * 此属性控制池允许达到的最大大小，包括空闲和正在使用的连接。基本上这个值将决定到数据库后端的最大实际连接数。对此的合理价值最好由您的执行环境决定。
+    * 当池达到此大小并且没有可用的空闲连接时，对getConnection（）的调用将connectionTimeout在超时前阻塞达几毫秒。 默认值：10
+    */
    private volatile int maxPoolSize;
+   /**
+    * 控制连接池空闲连接的最小数量，当连接池空闲连接少于minimumIdle，而且总共连接数不大于maximumPoolSize时，HikariCP会尽力补充新的连接。
+    * 为了性能考虑，不建议设置此值，而是让HikariCP把连接池当做固定大小的处理，默认minimumIdle与maximumPoolSize一样。
+    * 当 minIdle<0 或者 minIdle>maxPoolSize, 则被重置为maxPoolSize，该值默认为10。
+    *
+    * 作者认为如果minimumIdle小于maximumPoolSize的话，在流量激增的时候需要额外的连接，此时在请求方法里头再去处理新建连接会造成性能损失，
+    * 即会导致数据库一方面降低连接建立的速度，另一方面也会影响既有的连接事务的完成，间接影响了这些既有连接归还到连接池的速度。
+    * 作者认为minimumIdle与maximumPoolSize设置成一样，多余的空闲连接不会对整体的性能有什么严重影响。
+    */
    private volatile int minIdle;
    private volatile String username;
    private volatile String password;
@@ -332,6 +379,7 @@ public class HikariConfig implements HikariConfigMXBean
 
    /**
     * Get the SQL query to be executed to test the validity of connections.
+    * 获取用于测试连接有效性的SQL查询字符串。
     *
     * @return the SQL query string, or null
     */

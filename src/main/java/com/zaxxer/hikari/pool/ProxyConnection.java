@@ -31,6 +31,7 @@ import static com.zaxxer.hikari.util.ClockSource.currentTime;
 
 /**
  * This is the proxy class for java.sql.Connection.
+ * 这是一个对java.sql.Connection代理类
  *
  * @author Brett Wooldridge
  */
@@ -222,6 +223,7 @@ public abstract class ProxyConnection implements Connection
    public final void close() throws SQLException
    {
       // Closing statements can cause connection eviction, so this must run before the conditional below
+      // 关闭statements语句可能导致连接回收，因此必须在此之前运行
       closeStatements();
 
       if (delegate != ClosedConnection.CLOSED_CONNECTION) {

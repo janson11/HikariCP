@@ -44,6 +44,9 @@ final class PoolEntry implements IConcurrentBagEntry
 
    @SuppressWarnings("FieldCanBeLocal")
    private volatile int state = 0;
+   /**
+    * 是否驱逐
+    */
    private volatile boolean evict;
 
    private volatile ScheduledFuture<?> endOfLife;

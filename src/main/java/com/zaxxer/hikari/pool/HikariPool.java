@@ -65,6 +65,19 @@ import static java.util.concurrent.TimeUnit.SECONDS;
 /**
  * This is the primary connection pool class that provides the basic
  * pooling behavior for HikariCP.
+ * 这个类是HikariCP的主要连接池类，提供基本的连接池行为。
+ *
+ * 这些方法用于管理连接池的各种状态和行为，包括连接的创建、回收、关闭、泄漏检测和池的维护。
+ *
+ * 代码总结
+ * HikariPool类是HikariCP连接池的核心实现，主要功能包括：
+ *
+ * 连接管理：创建、获取、回收和关闭数据库连接。
+ * 连接池维护：通过定期任务维护连接池的最小空闲连接数，处理过期和泄漏的连接。
+ * 连接池状态管理：管理连接池的状态，包括正常、暂停和关闭状态。
+ * 监控和度量：记录连接池的使用情况，提供监控和度量数据。
+ * 异常处理：处理连接获取超时、连接泄漏等异常情况。
+ * 通过这些功能，HikariPool确保了高效、可靠的数据库连接管理，适用于各种高并发场景。
  *
  * @author Brett Wooldridge
  */
@@ -84,6 +97,12 @@ public final class HikariPool extends PoolBase implements HikariPoolMXBean, IBag
    private static final String EVICTED_CONNECTION_MESSAGE = "(connection was evicted)";
    private static final String DEAD_CONNECTION_MESSAGE = "(connection is dead)";
 
+   /**
+    * 主要是会被private final ThreadPoolExecutor addConnectionExecutor;调用到，
+    * 一处是fillPool,从当前的空闲连接(在执行时被感知到的)填充到minimumIdle
+    * （HikariCP尝试在池中维护的最小空闲连接数，如果空闲连接低于此值并且池中的总连接数少于maximumPoolSize，HikariCP将尽最大努力快速高效地添加其他连接）。
+    * 补充新连接也会遭遇Connection refused相关的异常。
+    */
    private final PoolEntryCreator POOL_ENTRY_CREATOR = new PoolEntryCreator(null /*logging prefix*/);
    private final PoolEntryCreator POST_FILL_POOL_ENTRY_CREATOR = new PoolEntryCreator("After adding ");
    private final Collection<Runnable> addConnectionQueue;
@@ -108,6 +127,7 @@ public final class HikariPool extends PoolBase implements HikariPoolMXBean, IBag
       super(config);
 
       this.connectionBag = new ConcurrentBag<>(this);
+      // isAllowPoolSuspension默认值是false的，构造函数直接会创建SuspendResumeLock.FAUX_LOCK；只有isAllowPoolSuspension为true时，才会真正创建SuspendResumeLock。
       this.suspendResumeLock = config.isAllowPoolSuspension() ? new SuspendResumeLock() : SuspendResumeLock.FAUX_LOCK;
 
       this.houseKeepingExecutorService = initializeHouseKeepingExecutorService();
@@ -134,6 +154,12 @@ public final class HikariPool extends PoolBase implements HikariPoolMXBean, IBag
 
       this.leakTaskFactory = new ProxyLeakTaskFactory(config.getLeakDetectionThreshold(), houseKeepingExecutorService);
 
+      // 注册连接泄漏检测任务
+      // Hikari会启动一个HouseKeeper定时任务，在HikariPool构造器里头初始化，默认的是初始化后100毫秒执行，之后每执行完一次之后隔HOUSEKEEPING_PERIOD_MS(30秒)时间执行。
+      // 这个定时任务的作用就是根据idleTimeout的值，移除掉空闲超时的连接。 首先检测时钟是否倒退，如果倒退了则立即对过期的连接进行标记evict；
+      // 之后当idleTimeout>0且配置的minimumIdle<maximumPoolSize时才开始处理超时的空闲连接。 取出状态是STATE_NOT_IN_USE的连接数，
+      // 如果大于minimumIdle，则遍历STATE_NOT_IN_USE的连接的连接，将空闲超时达到idleTimeout的连接从connectionBag移除掉，若移除成功则关闭该连接，然后toRemove--。 在空闲连接移除之后，再调用fillPool，尝试补充空间连接数到minimumIdle值
+      //hikari的连接泄露是每次getConnection的时候单独触发一个延时任务来处理，而空闲连接的清除则是使用HouseKeeper定时任务来处理，其运行间隔由com.zaxxer.hikari.housekeeping.periodMs环境变量控制，默认为30秒。
       this.houseKeeperTask = houseKeepingExecutorService.scheduleWithFixedDelay(new HouseKeeper(), 100L, HOUSEKEEPING_PERIOD_MS, MILLISECONDS);
 
       if (Boolean.getBoolean("com.zaxxer.hikari.blockUntilFilled") && config.getInitializationFailTimeout() > 1) {
@@ -146,6 +172,7 @@ public final class HikariPool extends PoolBase implements HikariPoolMXBean, IBag
 
    /**
     * Get a connection from the pool, or timeout after connectionTimeout milliseconds.
+    * 从连接池中获取一个连接，或者在connectionTimeout毫秒后超时
     *
     * @return a java.sql.Connection instance
     * @throws SQLException thrown if a timeout occurs trying to obtain a connection
@@ -157,13 +184,26 @@ public final class HikariPool extends PoolBase implements HikariPoolMXBean, IBag
 
    /**
     * Get a connection from the pool, or timeout after the specified number of milliseconds.
+    * 从连接池中获取一个连接，或者在connectionTimeout毫秒后超时
     *
-    * @param hardTimeout the maximum time to wait for a connection from the pool
+    * 连接泄漏检测的原理就是：连接有借有还，hikari是每借用一个connection则会创建一个延时的定时任务，在归还或者出异常的或者用户手动调用evictConnection的时候cancel掉这个task
+    *
+    * 如果是没有空闲连接且连接池满不能新建连接的情况下，hikari则是阻塞connectionTimeout的时间，没有得到连接抛出SQLTransientConnectionException。
+    *
+    * 如果是有空闲连接的情况，hikari是在connectionTimeout时间内不断循环获取下一个空闲连接进行校验，校验失败继续获取下一个空闲连接，直到超时抛出SQLTransientConnectionException。
+    * （hikari在获取一个连接的时候，会在connectionTimeout时间内循环把空闲连接挨个validate一次，最后timeout抛出异常；之后的获取连接操作，则一直阻塞connectionTimeout时间再抛出异常）
+    *
+    * 如果微服务使用了连接的健康监测，如果你catch了此异常，就会不断的打出健康监测的错误。
+    *
+    * hikari如果connectionTimeout设置太大的话，在数据库挂的时候，很容易阻塞业务线程
+    *
+    * @param hardTimeout the maximum time to wait for a connection from the pool 从连接池获取连接的最大等待时间
     * @return a java.sql.Connection instance
     * @throws SQLException thrown if a timeout occurs trying to obtain a connection
     */
    public Connection getConnection(final long hardTimeout) throws SQLException
    {
+      // 先判断当前状态是否允许获取连接
       suspendResumeLock.acquire();
       final long startTime = currentTime();
 
@@ -204,6 +244,7 @@ public final class HikariPool extends PoolBase implements HikariPoolMXBean, IBag
          throw new SQLException(poolName + " - Interrupted during connection acquisition", e);
       }
       finally {
+         // 释放许可
          suspendResumeLock.release();
       }
    }
@@ -266,6 +307,7 @@ public final class HikariPool extends PoolBase implements HikariPoolMXBean, IBag
 
    /**
     * Evict a Connection from the pool.
+    * 从连接池驱逐一个连接
     *
     * @param connection the Connection to evict (actually a {@link ProxyConnection})
     */
@@ -502,6 +544,9 @@ public final class HikariPool extends PoolBase implements HikariPoolMXBean, IBag
 
    /**
     * Fill pool up from current idle connections (as they are perceived at the point of execution) to minimumIdle connections.
+    * 填充池，从当前空闲连接（在执行时被认为是空闲的）到minimumIdle连接。
+    * 作者不推荐使用minimumIdle，该属性控制HikariCP尝试在池中维护的最小空闲连接数。如果空闲连接低于此值并且池中的总连接数少于maximumPoolSize，
+    * HikariCP将尽最大努力快速高效地添加其他连接。但是，为了获得最佳性能和响应尖峰需求，我们建议不要设置此值，而是允许HikariCP充当固定大小的连接池。 默认值：与maximumPoolSize相同
     */
    private synchronized void fillPool()
    {
@@ -614,6 +659,9 @@ public final class HikariPool extends PoolBase implements HikariPoolMXBean, IBag
     * Create/initialize the Housekeeping service {@link ScheduledExecutorService}.  If the user specified an Executor
     * to be used in the {@link HikariConfig}, then we use that.  If no Executor was specified (typical), then create
     * an Executor and configure it.
+    * 创建/初始化Housekeeping服务ScheduledExecutorService。
+    * 如果用户在HikariConfig中指定了要使用的Executor，则使用该Executor。如果没有指定（典型），则创建Executor并配置它。
+    *
     *
     * @return either the user specified {@link ScheduledExecutorService}, or the one we created
     */
@@ -698,6 +746,7 @@ public final class HikariPool extends PoolBase implements HikariPoolMXBean, IBag
 
    /**
     * Creating and adding poolEntries (connections) to the pool.
+    * 创建和添加poolEntries（连接）到池中。
     */
    private final class PoolEntryCreator implements Callable<Boolean>
    {
@@ -734,6 +783,9 @@ public final class HikariPool extends PoolBase implements HikariPoolMXBean, IBag
       /**
        * We only create connections if we need another idle connection or have threads still waiting
        * for a new connection.  Otherwise we bail out of the request to create.
+       * 我们只在需要另一个空闲连接或仍有线程等待新连接时才创建连接。否则，我们退出创建请求。
+       *
+       * shouldCreateAnotherConnection方法决定了是否需要添加新的连接
        *
        * @return true if we should create a connection, false if the need has disappeared
        */
@@ -745,6 +797,9 @@ public final class HikariPool extends PoolBase implements HikariPoolMXBean, IBag
 
    /**
     * The house keeping task to retire and maintain minimum idle connections.
+    * 该线程尝试在池中维护的最小空闲连接数
+    *
+    *
     */
    private final class HouseKeeper implements Runnable
    {
@@ -755,6 +810,7 @@ public final class HikariPool extends PoolBase implements HikariPoolMXBean, IBag
       {
          try {
             // refresh values in case they changed via MBean
+            // 不断刷新的通过MBean调整的connectionTimeout和validationTimeout等值
             connectionTimeout = config.getConnectionTimeout();
             validationTimeout = config.getValidationTimeout();
             leakTaskFactory.updateLeakDetectionThreshold(config.getLeakDetectionThreshold());
@@ -764,6 +820,7 @@ public final class HikariPool extends PoolBase implements HikariPoolMXBean, IBag
             final long now = currentTime();
 
             // Detect retrograde time, allowing +128ms as per NTP spec.
+            // 检测逆行时间，允许+128 ms（根据Norton规范）
             if (plusMillis(now, 128) < plusMillis(previous, HOUSEKEEPING_PERIOD_MS)) {
                LOGGER.warn("{} - Retrograde clock change detected (housekeeper delta={}), soft-evicting connections from pool.",
                            poolName, elapsedDisplayString(previous, now));

@@ -101,6 +101,7 @@ public class HikariDataSource extends HikariConfig implements DataSource, Closea
       }
 
       // See http://en.wikipedia.org/wiki/Double-checked_locking#Usage_in_Java
+      // 双层检查锁定，确保线程安全 double-checked locking 【DCL】
       HikariPool result = pool;
       if (result == null) {
          synchronized (this) {
