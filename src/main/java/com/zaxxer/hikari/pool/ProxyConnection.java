@@ -164,12 +164,13 @@ public abstract class ProxyConnection implements Connection
 
       return sqle;
    }
-
+   // 移除statement缓存
    final synchronized void untrackStatement(final Statement statement)
    {
       openStatements.remove(statement);
    }
 
+   // 用于标识连接被访问或存在可提交数据
    final void markCommitStateDirty()
    {
       if (isAutoCommit) {
@@ -185,6 +186,7 @@ public abstract class ProxyConnection implements Connection
       leakTask.cancel();
    }
 
+   // 缓存statement
    private synchronized <T extends Statement> T trackStatement(final T statement)
    {
       openStatements.add(statement);
@@ -192,6 +194,7 @@ public abstract class ProxyConnection implements Connection
       return statement;
    }
 
+   // 关闭全部已打开的statement（只在close方法中调用）
    @SuppressWarnings("EmptyTryBlock")
    private synchronized void closeStatements()
    {
@@ -471,6 +474,7 @@ public abstract class ProxyConnection implements Connection
       private static Connection getClosedConnection()
       {
          InvocationHandler handler = (proxy, method, args) -> {
+            // 只保留5个方法的快速返回，其他均抛出异常
             final String methodName = method.getName();
             if ("isClosed".equals(methodName)) {
                return Boolean.TRUE;

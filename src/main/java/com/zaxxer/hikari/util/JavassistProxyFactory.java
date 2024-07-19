@@ -47,8 +47,11 @@ import javassist.bytecode.ClassFile;
 /**
  * This class generates the proxy objects for {@link Connection}, {@link Statement},
  * {@link PreparedStatement}, and {@link CallableStatement}.  Additionally it injects
- * method bodies into the {@link ProxyFactory} class methods that can instantiate
  * instances of the generated proxies.
+ * 这个类生成代理类，包括Connection、Statement、PreparedStatement、CallableStatement
+ *
+ *  该代码段注入了方法体到 {@link ProxyFactory} 类的方法中，这些方法可以实例化生成的代理实例。
+ *
  *
  * @author Brett Wooldridge
  */
@@ -86,6 +89,10 @@ public final class JavassistProxyFactory
       }
    }
 
+   /**
+    * 修改工厂类中的代理类获取方法
+    * @throws Exception
+    */
    private static void modifyProxyFactory() throws Exception
    {
       System.out.println("Generating method bodies for com.zaxxer.hikari.proxy.ProxyFactory");
@@ -120,6 +127,11 @@ public final class JavassistProxyFactory
 
    /**
     *  Generate Javassist Proxy Classes
+    *  生成实际使用的代理类字节码
+    * @param primaryInterface
+    * @param superClassName
+    * @param methodBody
+    * @throws Exception
     */
    private static <T> void generateProxyClass(Class<T> primaryInterface, String superClassName, String methodBody) throws Exception
    {

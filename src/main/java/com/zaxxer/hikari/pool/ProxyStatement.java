@@ -62,6 +62,7 @@ public abstract class ProxyStatement implements Statement
    @Override
    public final void close() throws SQLException
    {
+      // 防止重复关闭
       synchronized (this) {
          if (isClosed) {
             return;
@@ -70,9 +71,11 @@ public abstract class ProxyStatement implements Statement
          isClosed = true;
       }
 
+      // 移出缓存
       connection.untrackStatement(delegate);
 
       try {
+         //关闭代理
          delegate.close();
       }
       catch (SQLException e) {
